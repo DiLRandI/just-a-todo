@@ -1,0 +1,53 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestCLIAddAndToday(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "todo.db")
+	ctx := context.Background()
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := Execute(ctx, []string{"--db", db, "add", "Pay rent", "--due", "today", "--priority", "high", "--tag", "home", "--no-color"}, &out, &errOut)
+	if err != nil {
+		t.Fatalf("add failed: %v stderr=%s", err, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Created #1") {
+		t.Fatalf("add output = %q", out.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	err = Execute(ctx, []string{"--db", db, "--no-color", "today"}, &out, &errOut)
+	if err != nil {
+		t.Fatalf("today failed: %v stderr=%s", err, errOut.String())
+	}
+	if !strings.Contains(out.String(), "TODAY") || !strings.Contains(out.String(), "Pay rent") {
+		t.Fatalf("today output = %q", out.String())
+	}
+}
+
+func TestCLIRemoveRequiresForce(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "todo.db")
+	ctx := context.Background()
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	if err := Execute(ctx, []string{"--db", db, "add", "Delete me"}, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	err := Execute(ctx, []string{"--db", db, "remove", "1"}, &out, &errOut)
+	if err == nil {
+		t.Fatal("expected remove without --force to fail")
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("remove error = %v", err)
+	}
+}

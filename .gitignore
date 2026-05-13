@@ -1,0 +1,5 @@
+bin/
+/todo
+*.db
+*.db-shm
+*.db-wal
