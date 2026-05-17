@@ -27,12 +27,16 @@ const (
 type viewMode string
 
 const (
-	viewOpen     viewMode = "open"
-	viewToday    viewMode = "today"
-	viewWeek     viewMode = "week"
-	viewNoDue    viewMode = "no due"
-	viewDone     viewMode = "done"
-	viewArchived viewMode = "archived"
+	viewOpen      viewMode = "open"
+	viewToday     viewMode = "today"
+	viewTomorrow  viewMode = "tomorrow"
+	viewThisWeek  viewMode = "this week"
+	viewNextWeek  viewMode = "next week"
+	viewThisMonth viewMode = "this month"
+	viewNextMonth viewMode = "next month"
+	viewNoDue     viewMode = "no due"
+	viewDone      viewMode = "done"
+	viewArchived  viewMode = "archived"
 )
 
 type Model struct {
@@ -155,12 +159,20 @@ func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "2":
 		m.setView(viewToday)
 	case "3":
-		m.setView(viewWeek)
+		m.setView(viewTomorrow)
 	case "4":
-		m.setView(viewNoDue)
+		m.setView(viewThisWeek)
 	case "5":
-		m.setView(viewDone)
+		m.setView(viewNextWeek)
 	case "6":
+		m.setView(viewThisMonth)
+	case "7":
+		m.setView(viewNextMonth)
+	case "8":
+		m.setView(viewNoDue)
+	case "9":
+		m.setView(viewDone)
+	case "0":
 		m.setView(viewArchived)
 	case "n":
 		m.startCreate()
@@ -290,11 +302,17 @@ func (m *Model) refresh() {
 	now := time.Now()
 	switch m.view {
 	case viewToday:
-		r, _ := dateparse.RangeFor("today", now)
-		filter.DueEnd = r.EndDate
-	case viewWeek:
-		r, _ := dateparse.RangeFor("week", now)
-		filter.DueEnd = r.EndDate
+		m.applyDateRange(&filter, "today", now)
+	case viewTomorrow:
+		m.applyDateRange(&filter, "tomorrow", now)
+	case viewThisWeek:
+		m.applyDateRange(&filter, "this week", now)
+	case viewNextWeek:
+		m.applyDateRange(&filter, "next week", now)
+	case viewThisMonth:
+		m.applyDateRange(&filter, "this month", now)
+	case viewNextMonth:
+		m.applyDateRange(&filter, "next month", now)
 	case viewNoDue:
 		filter.NoDueOnly = true
 	case viewDone:
@@ -316,6 +334,16 @@ func (m *Model) refresh() {
 	m.clampCursor()
 }
 
+func (m *Model) applyDateRange(filter *store.ListFilter, name string, now time.Time) {
+	r, err := dateparse.RangeFor(name, now)
+	if err != nil {
+		m.err = err
+		return
+	}
+	filter.DueStart = r.StartDate
+	filter.DueEnd = r.EndDate
+}
+
 func (m *Model) setView(view viewMode) {
 	m.view = view
 	m.cursor = 0
@@ -335,7 +363,7 @@ func (m *Model) clampCursor() {
 	if m.cursor >= len(m.items) {
 		m.cursor = len(m.items) - 1
 	}
-	visible := max(5, m.height-9)
+	visible := max(5, m.height-10)
 	if m.cursor < m.offset {
 		m.offset = m.cursor
 	}
@@ -681,7 +709,8 @@ func (m Model) listView() string {
 		fmt.Fprintf(&b, "  search:%s", m.search)
 	}
 	b.WriteString("\n")
-	b.WriteString("1 open  2 today  3 week  4 no due  5 done  6 archived\n\n")
+	b.WriteString("1 open  2 today  3 tomorrow  4 this week  5 next week\n")
+	b.WriteString("6 this month  7 next month  8 no due  9 done  0 archived\n\n")
 
 	if m.err != nil {
 		fmt.Fprintf(&b, "%s\n\n", lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.err.Error()))
@@ -692,7 +721,7 @@ func (m Model) listView() string {
 	if len(m.items) == 0 {
 		b.WriteString("No todos.\n")
 	} else {
-		visible := max(5, m.height-9)
+		visible := max(5, m.height-10)
 		end := min(len(m.items), m.offset+visible)
 		for i := m.offset; i < end; i++ {
 			prefix := "  "

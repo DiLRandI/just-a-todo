@@ -69,10 +69,14 @@ todo today --no-color
 - `j/k` or arrow keys: move
 - `1`: open todos
 - `2`: today
-- `3`: this week
-- `4`: no due date
-- `5`: completed
-- `6`: archived
+- `3`: tomorrow
+- `4`: this week
+- `5`: next week
+- `6`: this month
+- `7`: next month
+- `8`: no due date
+- `9`: completed
+- `0`: archived
 - `n`: create
 - `e`: edit
 - `enter`, `space`, or `d`: mark done or reopen

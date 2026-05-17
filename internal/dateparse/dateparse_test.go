@@ -36,20 +36,31 @@ func TestParseDue(t *testing.T) {
 func TestRangeForCalendarWeekAndMonth(t *testing.T) {
 	now := time.Date(2026, 5, 13, 10, 30, 0, 0, time.Local)
 
-	week, err := RangeFor("week", now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if week.StartDate != "2026-05-11" || week.EndDate != "2026-05-17" {
-		t.Fatalf("week = %s..%s", week.StartDate, week.EndDate)
+	tests := []struct {
+		name  string
+		start string
+		end   string
+	}{
+		{name: "today", start: "2026-05-13", end: "2026-05-13"},
+		{name: "tomorrow", start: "2026-05-14", end: "2026-05-14"},
+		{name: "week", start: "2026-05-11", end: "2026-05-17"},
+		{name: "this week", start: "2026-05-11", end: "2026-05-17"},
+		{name: "next week", start: "2026-05-18", end: "2026-05-24"},
+		{name: "month", start: "2026-05-01", end: "2026-05-31"},
+		{name: "this month", start: "2026-05-01", end: "2026-05-31"},
+		{name: "next month", start: "2026-06-01", end: "2026-06-30"},
 	}
 
-	month, err := RangeFor("month", now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if month.StartDate != "2026-05-01" || month.EndDate != "2026-05-31" {
-		t.Fatalf("month = %s..%s", month.StartDate, month.EndDate)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := RangeFor(tt.name, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.StartDate != tt.start || r.EndDate != tt.end {
+				t.Fatalf("%s = %s..%s, want %s..%s", tt.name, r.StartDate, r.EndDate, tt.start, tt.end)
+			}
+		})
 	}
 }
 

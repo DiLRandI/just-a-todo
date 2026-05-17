@@ -58,15 +58,18 @@ func RangeFor(name string, now time.Time) (Range, error) {
 	case "tomorrow":
 		start = day.AddDate(0, 0, 1)
 		end = start
-	case "week":
-		weekday := int(day.Weekday())
-		if weekday == 0 {
-			weekday = 7
-		}
-		start = day.AddDate(0, 0, -(weekday - 1))
+	case "week", "this week":
+		start = startOfWeek(day)
 		end = start.AddDate(0, 0, 6)
-	case "month":
+	case "next week":
+		start = startOfWeek(day).AddDate(0, 0, 7)
+		end = start.AddDate(0, 0, 6)
+	case "month", "this month":
 		start = time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, day.Location())
+		end = start.AddDate(0, 1, -1)
+	case "next month":
+		thisMonth := time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, day.Location())
+		start = thisMonth.AddDate(0, 1, 0)
 		end = start.AddDate(0, 1, -1)
 	default:
 		return Range{}, fmt.Errorf("unknown range %q", name)
@@ -187,6 +190,14 @@ func lastDayOfMonth(year int, month time.Month) int {
 
 func startOfDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+func startOfWeek(day time.Time) time.Time {
+	weekday := int(day.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	return day.AddDate(0, 0, -(weekday - 1))
 }
 
 func ParseID(value string) (int64, error) {
