@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -48,9 +49,25 @@ type Model struct {
 	message   string
 	err       error
 	inputs    []textinput.Model
+	notes     textarea.Model
 	field     int
+	pick      int
 	editingID int64
 	confirmID int64
+}
+
+const (
+	formTitle = iota
+	formDue
+	formPriority
+	formTags
+	formRepeat
+	formNotes
+)
+
+type suggestion struct {
+	value string
+	label string
 }
 
 func Run(ctx context.Context, st *store.Store) error {
@@ -184,6 +201,16 @@ func (m Model) updateForm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.inputs = nil
 		m.editingID = 0
 		return m, nil
+	case "up":
+		if m.hasSuggestions() {
+			m.movePick(-1)
+			return m, nil
+		}
+	case "down":
+		if m.hasSuggestions() {
+			m.movePick(1)
+			return m, nil
+		}
 	case "shift+tab":
 		m.moveField(-1)
 		return m, m.focusField()
@@ -191,7 +218,17 @@ func (m Model) updateForm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.moveField(1)
 		return m, m.focusField()
 	case "enter":
-		if m.field < len(m.inputs)-1 {
+		if m.hasSuggestions() {
+			m.applyPick()
+			m.moveField(1)
+			return m, m.focusField()
+		}
+		if m.field == formNotes {
+			updated, cmd := m.notes.Update(msg)
+			m.notes = updated
+			return m, cmd
+		}
+		if m.field < formNotes {
 			m.moveField(1)
 			return m, m.focusField()
 		}
@@ -200,8 +237,17 @@ func (m Model) updateForm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.saveForm(), nil
 	}
 
-	updated, cmd := m.inputs[m.field].Update(msg)
-	m.inputs[m.field] = updated
+	var cmd tea.Cmd
+	if m.field == formNotes {
+		m.notes, cmd = m.notes.Update(msg)
+	} else {
+		var updated textinput.Model
+		updated, cmd = m.inputs[m.field].Update(msg)
+		m.inputs[m.field] = updated
+	}
+	if m.hasSuggestions() {
+		m.clampPick()
+	}
 	return m, cmd
 }
 
@@ -362,14 +408,16 @@ func (m *Model) startCreate() {
 	m.screen = screenForm
 	m.editingID = 0
 	m.field = 0
-	m.inputs = newFormInputs(todo.Todo{})
+	m.pick = 0
+	m.inputs, m.notes = newFormInputs(todo.Todo{})
 }
 
 func (m *Model) startEdit(item todo.Todo) {
 	m.screen = screenForm
 	m.editingID = item.ID
 	m.field = 0
-	m.inputs = newFormInputs(item)
+	m.pick = 0
+	m.inputs, m.notes = newFormInputs(item)
 }
 
 func (m *Model) startSearch() {
@@ -383,10 +431,10 @@ func (m *Model) startSearch() {
 	m.inputs = []textinput.Model{input}
 }
 
-func newFormInputs(item todo.Todo) []textinput.Model {
-	labels := []string{"Title", "Due", "Priority", "Tags", "Repeat", "Notes"}
-	placeholders := []string{"Buy milk", "tomorrow 09:00", "normal", "home, errands", "none", "optional notes"}
-	values := []string{item.Title, dueValue(item), string(item.Priority), strings.Join(item.Tags, ", "), string(item.RepeatRule), item.Notes}
+func newFormInputs(item todo.Todo) ([]textinput.Model, textarea.Model) {
+	labels := []string{"Title", "Due", "Priority", "Tags", "Repeat"}
+	placeholders := []string{"Buy milk", "tomorrow 09:00", "normal", "home, errands", "none"}
+	values := []string{item.Title, dueValue(item), string(item.Priority), strings.Join(item.Tags, ", "), string(item.RepeatRule)}
 	if values[2] == "" {
 		values[2] = string(todo.PriorityNormal)
 	}
@@ -403,7 +451,18 @@ func newFormInputs(item todo.Todo) []textinput.Model {
 		input.SetWidth(60)
 		inputs[i] = input
 	}
-	return inputs
+
+	notes := textarea.New()
+	notes.Prompt = "Notes: "
+	notes.Placeholder = "optional notes"
+	notes.ShowLineNumbers = false
+	notes.EndOfBufferCharacter = ' '
+	notes.DynamicHeight = true
+	notes.MinHeight = 1
+	notes.MaxHeight = 6
+	notes.SetWidth(72)
+	notes.SetValue(item.Notes)
+	return inputs, notes
 }
 
 func dueValue(item todo.Todo) string {
@@ -417,12 +476,17 @@ func dueValue(item todo.Todo) string {
 }
 
 func (m *Model) moveField(delta int) {
-	m.inputs[m.field].Blur()
-	m.field += delta
-	if m.field < 0 {
-		m.field = len(m.inputs) - 1
+	if m.field == formNotes {
+		m.notes.Blur()
+	} else {
+		m.inputs[m.field].Blur()
 	}
-	if m.field >= len(m.inputs) {
+	m.field += delta
+	m.pick = 0
+	if m.field < 0 {
+		m.field = formNotes
+	}
+	if m.field > formNotes {
 		m.field = 0
 	}
 }
@@ -431,7 +495,113 @@ func (m *Model) focusField() tea.Cmd {
 	for i := range m.inputs {
 		m.inputs[i].Blur()
 	}
+	m.notes.Blur()
+	m.clampPick()
+	if m.field == formNotes {
+		return m.notes.Focus()
+	}
 	return m.inputs[m.field].Focus()
+}
+
+func (m Model) hasSuggestions() bool {
+	return len(m.suggestions()) > 0
+}
+
+func (m Model) suggestions() []suggestion {
+	if len(m.inputs) == 0 {
+		return nil
+	}
+	switch m.field {
+	case formDue:
+		return filteredSuggestions(dueSuggestions(time.Now()), m.inputs[m.field].Value())
+	case formRepeat:
+		return filteredSuggestions(repeatSuggestions(), m.inputs[m.field].Value())
+	default:
+		return nil
+	}
+}
+
+func (m *Model) movePick(delta int) {
+	suggestions := m.suggestions()
+	if len(suggestions) == 0 {
+		m.pick = 0
+		return
+	}
+	m.pick += delta
+	if m.pick < 0 {
+		m.pick = len(suggestions) - 1
+	}
+	if m.pick >= len(suggestions) {
+		m.pick = 0
+	}
+}
+
+func (m *Model) clampPick() {
+	suggestions := m.suggestions()
+	if len(suggestions) == 0 || m.pick < 0 {
+		m.pick = 0
+		return
+	}
+	if m.pick >= len(suggestions) {
+		m.pick = len(suggestions) - 1
+	}
+}
+
+func (m *Model) applyPick() {
+	suggestions := m.suggestions()
+	if len(suggestions) == 0 {
+		return
+	}
+	m.clampPick()
+	m.inputs[m.field].SetValue(suggestions[m.pick].value)
+}
+
+func filteredSuggestions(suggestions []suggestion, input string) []suggestion {
+	input = strings.ToLower(strings.TrimSpace(input))
+	if input == "" {
+		return suggestions
+	}
+	for _, item := range suggestions {
+		if strings.ToLower(item.value) == input {
+			return suggestions
+		}
+	}
+	filtered := make([]suggestion, 0, len(suggestions))
+	for _, item := range suggestions {
+		if strings.Contains(strings.ToLower(item.value), input) || strings.Contains(strings.ToLower(item.label), input) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func dueSuggestions(now time.Time) []suggestion {
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	items := []suggestion{
+		{value: "", label: "no due date"},
+		{value: "today", label: "today, all day"},
+		{value: "today 09:00", label: "today morning"},
+		{value: "today 17:00", label: "today end of day"},
+		{value: "tomorrow", label: "tomorrow, all day"},
+		{value: "tomorrow 09:00", label: "tomorrow morning"},
+	}
+	for i := 2; i <= 7; i++ {
+		date := day.AddDate(0, 0, i)
+		items = append(items, suggestion{
+			value: date.Format(time.DateOnly),
+			label: date.Format("Monday, Jan 2"),
+		})
+	}
+	return items
+}
+
+func repeatSuggestions() []suggestion {
+	return []suggestion{
+		{value: "none", label: "does not repeat"},
+		{value: "daily", label: "every day"},
+		{value: "weekly", label: "every week"},
+		{value: "monthly", label: "every month"},
+	}
 }
 
 func (m Model) saveForm() Model {
@@ -440,7 +610,7 @@ func (m Model) saveForm() Model {
 	priorityInput := strings.TrimSpace(m.inputs[2].Value())
 	tagsInput := strings.TrimSpace(m.inputs[3].Value())
 	repeatInput := strings.TrimSpace(m.inputs[4].Value())
-	notes := m.inputs[5].Value()
+	notes := m.notes.Value()
 
 	var due dateparse.Due
 	if dueInput != "" {
@@ -558,9 +728,56 @@ func (m Model) formView() string {
 		}
 		b.WriteString(line)
 		b.WriteString("\n")
+		if i == m.field {
+			b.WriteString(m.suggestionsView())
+		}
+	}
+	notes := m.notes.View()
+	if m.field == formNotes {
+		notes = lipgloss.NewStyle().Bold(true).Render(notes)
+	}
+	b.WriteString(notes)
+	if !strings.HasSuffix(notes, "\n") {
+		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString("tab next  enter advance/save  ctrl+s save  esc cancel\n")
+	if m.hasSuggestions() {
+		b.WriteString("up/down pick  enter apply/next  tab next  ctrl+s save  esc cancel\n")
+	} else if m.field == formNotes {
+		b.WriteString("enter newline  tab next  ctrl+s save  esc cancel\n")
+	} else {
+		b.WriteString("tab next  enter advance/save  ctrl+s save  esc cancel\n")
+	}
+	return b.String()
+}
+
+func (m Model) suggestionsView() string {
+	suggestions := m.suggestions()
+	if len(suggestions) == 0 {
+		if m.field == formDue || m.field == formRepeat {
+			return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("  no matching suggestions") + "\n"
+		}
+		return ""
+	}
+
+	var b strings.Builder
+	limit := min(len(suggestions), 7)
+	for i := range limit {
+		prefix := "  "
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+		if i == m.pick {
+			prefix = "> "
+			style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
+		}
+		value := suggestions[i].value
+		if value == "" {
+			value = "(blank)"
+		}
+		fmt.Fprintf(&b, "%s%s\n", prefix, style.Render(fmt.Sprintf("%-16s %s", value, suggestions[i].label)))
+	}
+	if len(suggestions) > limit {
+		fmt.Fprintf(&b, "  %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(fmt.Sprintf("+%d more, keep typing to filter", len(suggestions)-limit)))
+	}
 	return b.String()
 }
 

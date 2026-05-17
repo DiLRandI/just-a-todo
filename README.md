@@ -83,6 +83,8 @@ todo today --no-color
 - `r`: refresh
 - `q`: quit
 
+When adding or editing a todo, the `Due` and `Repeat` fields show suggestions. Use `up/down` to choose one, or keep typing to filter the list. The `Notes` field is multiline; use `ctrl+s` to save from Notes.
+
 ## Dates and Recurrence
 
 Accepted due values:
