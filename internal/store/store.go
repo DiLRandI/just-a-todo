@@ -15,7 +15,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var ErrNotFound = errors.New("todo not found")
+var (
+	ErrNotFound                 = errors.New("todo not found")
+	ErrRecurringSuccessorExists = errors.New("recurring todo already has a successor")
+)
 
 type Store struct {
 	db *sql.DB
@@ -88,15 +91,22 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 	defer tx.Rollback()
 
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS schema_migrations (
-			version INTEGER PRIMARY KEY,
-			applied_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS todos (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			title TEXT NOT NULL,
-			notes TEXT NOT NULL DEFAULT '',
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+				version INTEGER PRIMARY KEY,
+				applied_at TEXT NOT NULL
+			);`); err != nil {
+		return err
+	}
+
+	migrations := []struct {
+		version    int
+		statements []string
+	}{
+		{version: 1, statements: []string{
+			`CREATE TABLE IF NOT EXISTS todos (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				title TEXT NOT NULL,
+				notes TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done')),
 			priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low', 'normal', 'high')),
 			due_date TEXT NULL,
@@ -107,29 +117,49 @@ func (s *Store) Migrate(ctx context.Context) error {
 			completed_at TEXT NULL,
 			archived_at TEXT NULL
 		);`,
-		`CREATE TABLE IF NOT EXISTS tags (
+			`CREATE TABLE IF NOT EXISTS tags (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE
 		);`,
-		`CREATE TABLE IF NOT EXISTS todo_tags (
+			`CREATE TABLE IF NOT EXISTS todo_tags (
 			todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
 			tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-			PRIMARY KEY (todo_id, tag_id)
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_todos_status_archived ON todos(status, archived_at);`,
-		`CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(due_date, due_time);`,
-		`CREATE INDEX IF NOT EXISTS idx_todos_priority ON todos(priority);`,
-		`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, ?);`,
+				PRIMARY KEY (todo_id, tag_id)
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_todos_status_archived ON todos(status, archived_at);`,
+			`CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(due_date, due_time);`,
+			`CREATE INDEX IF NOT EXISTS idx_todos_priority ON todos(priority);`,
+		}},
+		{version: 2, statements: []string{
+			`ALTER TABLE todos ADD COLUMN recurrence_anchor_day INTEGER NULL;`,
+			`ALTER TABLE todos ADD COLUMN generated_from_id INTEGER NULL REFERENCES todos(id) ON DELETE SET NULL;`,
+			`UPDATE todos
+			 SET recurrence_anchor_day = CAST(substr(due_date, 9, 2) AS INTEGER)
+			 WHERE repeat_rule = 'monthly' AND due_date IS NOT NULL;`,
+			`CREATE UNIQUE INDEX idx_todos_generated_from
+			 ON todos(generated_from_id)
+			 WHERE generated_from_id IS NOT NULL;`,
+		}},
 	}
 
 	now := time.Now().Format(time.RFC3339)
-	for _, statement := range statements[:len(statements)-1] {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
+	for _, migration := range migrations {
+		var applied int
+		err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, migration.version).Scan(&applied)
+		if err != nil {
 			return err
 		}
-	}
-	if _, err := tx.ExecContext(ctx, statements[len(statements)-1], now); err != nil {
-		return err
+		if applied != 0 {
+			continue
+		}
+		for _, statement := range migration.statements {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("apply migration %d: %w", migration.version, err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, migration.version, now); err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit()
@@ -142,6 +172,10 @@ func (s *Store) CreateTodo(ctx context.Context, params todo.CreateParams) (todo.
 	priority, _ := todo.NormalizePriority(string(params.Priority))
 	repeat, _ := todo.NormalizeRepeat(string(params.RepeatRule))
 	tags := todo.NormalizeTags(params.Tags)
+	anchorDay, err := recurrenceAnchorDay(params.DueDate, repeat)
+	if err != nil {
+		return todo.Todo{}, err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -152,8 +186,8 @@ func (s *Store) CreateTodo(ctx context.Context, params todo.CreateParams) (todo.
 	now := time.Now().Format(time.RFC3339)
 	result, err := tx.ExecContext(
 		ctx, `INSERT INTO todos (
-		title, notes, status, priority, due_date, due_time, repeat_rule, created_at, updated_at
-	) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
+			title, notes, status, priority, due_date, due_time, repeat_rule, created_at, updated_at, recurrence_anchor_day
+		) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(params.Title),
 		params.Notes,
 		priority,
@@ -162,6 +196,7 @@ func (s *Store) CreateTodo(ctx context.Context, params todo.CreateParams) (todo.
 		repeat,
 		now,
 		now,
+		nullableInt(anchorDay),
 	)
 	if err != nil {
 		return todo.Todo{}, err
@@ -186,7 +221,7 @@ func (s *Store) GetTodo(ctx context.Context, id int64) (todo.Todo, error) {
 }
 
 func (s *Store) ListTodos(ctx context.Context, filter ListFilter) ([]todo.Todo, error) {
-	query := `SELECT id, title, notes, status, priority, due_date, due_time, repeat_rule, created_at, updated_at, completed_at, archived_at FROM todos`
+	query := `SELECT id, title, notes, status, priority, due_date, due_time, repeat_rule, created_at, updated_at, completed_at, archived_at, recurrence_anchor_day, generated_from_id FROM todos`
 	where, args := buildWhere(filter)
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -220,12 +255,12 @@ func (s *Store) ListTodos(ctx context.Context, filter ListFilter) ([]todo.Todo, 
 		return nil, err
 	}
 
+	tagsByTodo, err := loadTagsForTodos(ctx, s.db, todos)
+	if err != nil {
+		return nil, err
+	}
 	for i := range todos {
-		tags, err := loadTags(ctx, s.db, todos[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		todos[i].Tags = tags
+		todos[i].Tags = tagsByTodo[todos[i].ID]
 	}
 	return todos, nil
 }
@@ -274,6 +309,14 @@ func (s *Store) UpdateTodo(ctx context.Context, id int64, params todo.UpdatePara
 	current.Priority = priority
 	current.RepeatRule = repeat
 	current.Tags = todo.NormalizeTags(current.Tags)
+	if current.RepeatRule != todo.RepeatMonthly {
+		current.RecurrenceAnchorDay = 0
+	} else if params.DueDate != nil || params.RepeatRule != nil || current.RecurrenceAnchorDay == 0 {
+		current.RecurrenceAnchorDay, err = recurrenceAnchorDay(current.DueDate, current.RepeatRule)
+		if err != nil {
+			return todo.Todo{}, err
+		}
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -284,8 +327,8 @@ func (s *Store) UpdateTodo(ctx context.Context, id int64, params todo.UpdatePara
 	now := time.Now().Format(time.RFC3339)
 	result, err := tx.ExecContext(
 		ctx, `UPDATE todos SET
-		title = ?, notes = ?, priority = ?, due_date = ?, due_time = ?, repeat_rule = ?, updated_at = ?
-		WHERE id = ?`,
+			title = ?, notes = ?, priority = ?, due_date = ?, due_time = ?, repeat_rule = ?, updated_at = ?, recurrence_anchor_day = ?
+			WHERE id = ?`,
 		current.Title,
 		current.Notes,
 		current.Priority,
@@ -293,6 +336,7 @@ func (s *Store) UpdateTodo(ctx context.Context, id int64, params todo.UpdatePara
 		nullableString(current.DueTime),
 		current.RepeatRule,
 		now,
+		nullableInt(current.RecurrenceAnchorDay),
 		id,
 	)
 	if err != nil {
@@ -343,14 +387,24 @@ func (s *Store) CompleteTodo(ctx context.Context, id int64, now time.Time) (todo
 
 	var next *todo.Todo
 	if item.RepeatRule != todo.RepeatNone && item.DueDate != "" {
-		nextDate, err := dateparse.NextFutureDueDate(item.DueDate, item.DueTime, string(item.RepeatRule), now)
+		existing, err := s.successorTodo(ctx, tx, item.ID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return todo.Todo{}, nil, err
+		}
+		if err == nil {
+			next = &existing
+		}
+	}
+	if next == nil && item.RepeatRule != todo.RepeatNone && item.DueDate != "" {
+		nextDate, err := dateparse.NextFutureDueDateAnchored(item.DueDate, item.DueTime, string(item.RepeatRule), item.RecurrenceAnchorDay, now)
 		if err != nil {
 			return todo.Todo{}, nil, err
 		}
 		result, err := tx.ExecContext(
 			ctx, `INSERT INTO todos (
-			title, notes, status, priority, due_date, due_time, repeat_rule, created_at, updated_at
-		) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
+				title, notes, status, priority, due_date, due_time, repeat_rule, created_at, updated_at,
+				recurrence_anchor_day, generated_from_id
+			) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)`,
 			item.Title,
 			item.Notes,
 			item.Priority,
@@ -359,6 +413,8 @@ func (s *Store) CompleteTodo(ctx context.Context, id int64, now time.Time) (todo
 			item.RepeatRule,
 			stamp,
 			stamp,
+			nullableInt(item.RecurrenceAnchorDay),
+			item.ID,
 		)
 		if err != nil {
 			return todo.Todo{}, nil, err
@@ -371,17 +427,19 @@ func (s *Store) CompleteTodo(ctx context.Context, id int64, now time.Time) (todo
 			return todo.Todo{}, nil, err
 		}
 		created := todo.Todo{
-			ID:         nextID,
-			Title:      item.Title,
-			Notes:      item.Notes,
-			Status:     todo.StatusOpen,
-			Priority:   item.Priority,
-			DueDate:    nextDate,
-			DueTime:    item.DueTime,
-			RepeatRule: item.RepeatRule,
-			Tags:       append([]string(nil), item.Tags...),
-			CreatedAt:  now,
-			UpdatedAt:  now,
+			ID:                  nextID,
+			Title:               item.Title,
+			Notes:               item.Notes,
+			Status:              todo.StatusOpen,
+			Priority:            item.Priority,
+			DueDate:             nextDate,
+			DueTime:             item.DueTime,
+			RepeatRule:          item.RepeatRule,
+			Tags:                append([]string(nil), item.Tags...),
+			CreatedAt:           now,
+			UpdatedAt:           now,
+			RecurrenceAnchorDay: item.RecurrenceAnchorDay,
+			GeneratedFromID:     &item.ID,
 		}
 		next = &created
 	}
@@ -393,12 +451,35 @@ func (s *Store) CompleteTodo(ctx context.Context, id int64, now time.Time) (todo
 }
 
 func (s *Store) ReopenTodo(ctx context.Context, id int64) error {
-	now := time.Now().Format(time.RFC3339)
-	result, err := s.db.ExecContext(ctx, `UPDATE todos SET status = 'open', completed_at = NULL, updated_at = ? WHERE id = ?`, now, id)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	return requireRows(result)
+	defer tx.Rollback()
+
+	item, err := s.getTodo(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if item.Status == todo.StatusOpen {
+		return tx.Commit()
+	}
+	if item.RepeatRule != todo.RepeatNone {
+		if _, err := s.successorTodo(ctx, tx, id); err == nil {
+			return ErrRecurringSuccessorExists
+		} else if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+	}
+	now := time.Now().Format(time.RFC3339)
+	result, err := tx.ExecContext(ctx, `UPDATE todos SET status = 'open', completed_at = NULL, updated_at = ? WHERE id = ?`, now, id)
+	if err != nil {
+		return err
+	}
+	if err := requireRows(result); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ArchiveTodo(ctx context.Context, id int64) error {
@@ -433,7 +514,7 @@ type querier interface {
 }
 
 func (s *Store) getTodo(ctx context.Context, q querier, id int64) (todo.Todo, error) {
-	row := q.QueryRowContext(ctx, `SELECT id, title, notes, status, priority, due_date, due_time, repeat_rule, created_at, updated_at, completed_at, archived_at FROM todos WHERE id = ?`, id)
+	row := q.QueryRowContext(ctx, `SELECT id, title, notes, status, priority, due_date, due_time, repeat_rule, created_at, updated_at, completed_at, archived_at, recurrence_anchor_day, generated_from_id FROM todos WHERE id = ?`, id)
 	item, err := scanTodo(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -446,6 +527,19 @@ func (s *Store) getTodo(ctx context.Context, q querier, id int64) (todo.Todo, er
 		return todo.Todo{}, err
 	}
 	return item, nil
+}
+
+func (s *Store) successorTodo(ctx context.Context, q querier, generatedFromID int64) (todo.Todo, error) {
+	row := q.QueryRowContext(ctx, `SELECT id, title, notes, status, priority, due_date, due_time, repeat_rule, created_at, updated_at, completed_at, archived_at, recurrence_anchor_day, generated_from_id FROM todos WHERE generated_from_id = ?`, generatedFromID)
+	item, err := scanTodo(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return todo.Todo{}, ErrNotFound
+	}
+	if err != nil {
+		return todo.Todo{}, err
+	}
+	item.Tags, err = loadTags(ctx, q, item.ID)
+	return item, err
 }
 
 func buildWhere(filter ListFilter) ([]string, []any) {
@@ -496,8 +590,8 @@ func buildWhere(filter ListFilter) ([]string, []any) {
 	}
 
 	if filter.Search != "" {
-		needle := "%" + strings.ToLower(strings.TrimSpace(filter.Search)) + "%"
-		where = append(where, "(LOWER(title) LIKE ? OR LOWER(notes) LIKE ?)")
+		needle := "%" + escapeLike(strings.ToLower(strings.TrimSpace(filter.Search))) + "%"
+		where = append(where, `(LOWER(title) LIKE ? ESCAPE '\' OR LOWER(notes) LIKE ? ESCAPE '\')`)
 		args = append(args, needle, needle)
 	}
 
@@ -511,6 +605,8 @@ type scanner interface {
 func scanTodo(row scanner) (todo.Todo, error) {
 	var item todo.Todo
 	var dueDate, dueTime, completedAt, archivedAt sql.NullString
+	var recurrenceAnchorDay sql.NullInt64
+	var generatedFromID sql.NullInt64
 	var createdAt, updatedAt string
 
 	err := row.Scan(
@@ -526,6 +622,8 @@ func scanTodo(row scanner) (todo.Todo, error) {
 		&updatedAt,
 		&completedAt,
 		&archivedAt,
+		&recurrenceAnchorDay,
+		&generatedFromID,
 	)
 	if err != nil {
 		return todo.Todo{}, err
@@ -542,6 +640,12 @@ func scanTodo(row scanner) (todo.Todo, error) {
 	if archivedAt.Valid {
 		t := parseStoredTime(archivedAt.String)
 		item.ArchivedAt = &t
+	}
+	if recurrenceAnchorDay.Valid {
+		item.RecurrenceAnchorDay = int(recurrenceAnchorDay.Int64)
+	}
+	if generatedFromID.Valid {
+		item.GeneratedFromID = &generatedFromID.Int64
 	}
 	return item, nil
 }
@@ -562,6 +666,49 @@ func loadTags(ctx context.Context, q querier, todoID int64) ([]string, error) {
 		tags = append(tags, tag)
 	}
 	return tags, rows.Err()
+}
+
+func loadTagsForTodos(ctx context.Context, q querier, items []todo.Todo) (map[int64][]string, error) {
+	tagsByTodo := make(map[int64][]string, len(items))
+	if len(items) == 0 {
+		return tagsByTodo, nil
+	}
+	const batchSize = 500
+	for start := 0; start < len(items); start += batchSize {
+		end := min(start+batchSize, len(items))
+		placeholders := make([]string, end-start)
+		args := make([]any, end-start)
+		for i, item := range items[start:end] {
+			placeholders[i] = "?"
+			args[i] = item.ID
+		}
+		query := `SELECT tt.todo_id, t.name
+			FROM todo_tags tt
+			JOIN tags t ON t.id = tt.tag_id
+			WHERE tt.todo_id IN (` + strings.Join(placeholders, ",") + `)
+			ORDER BY tt.todo_id, t.name`
+		rows, err := q.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var todoID int64
+			var tag string
+			if err := rows.Scan(&todoID, &tag); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			tagsByTodo[todoID] = append(tagsByTodo[todoID], tag)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return tagsByTodo, nil
 }
 
 func replaceTags(ctx context.Context, tx *sql.Tx, todoID int64, tags []string) error {
@@ -610,6 +757,29 @@ func nullableString(value string) any {
 		return nil
 	}
 	return strings.TrimSpace(value)
+}
+
+func nullableInt(value int) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
+
+func recurrenceAnchorDay(dueDate string, repeat todo.RepeatRule) (int, error) {
+	if repeat != todo.RepeatMonthly {
+		return 0, nil
+	}
+	date, err := time.Parse(time.DateOnly, dueDate)
+	if err != nil {
+		return 0, fmt.Errorf("invalid due date %q", dueDate)
+	}
+	return date.Day(), nil
+}
+
+func escapeLike(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(value)
 }
 
 func parseStoredTime(value string) time.Time {

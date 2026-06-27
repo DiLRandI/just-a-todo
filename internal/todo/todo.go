@@ -44,6 +44,11 @@ type Todo struct {
 	UpdatedAt   time.Time
 	CompletedAt *time.Time
 	ArchivedAt  *time.Time
+	// RecurrenceAnchorDay preserves the intended calendar day for monthly
+	// recurrences after a short month clamps an occurrence.
+	RecurrenceAnchorDay int
+	// GeneratedFromID identifies the occurrence that generated this one.
+	GeneratedFromID *int64
 }
 
 type CreateParams struct {

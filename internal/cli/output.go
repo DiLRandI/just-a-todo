@@ -83,7 +83,7 @@ func formatLine(item todo.Todo, color bool) string {
 		status = "done"
 	}
 	if item.IsArchived() {
-		status = "archived"
+		status += "+arc"
 	}
 
 	tags := ""

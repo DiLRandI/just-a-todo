@@ -51,3 +51,24 @@ func TestCLIRemoveRequiresForce(t *testing.T) {
 		t.Fatalf("remove error = %v", err)
 	}
 }
+
+func TestCLILeavesErrorRenderingToCaller(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := Execute(context.Background(), []string{"list", "unexpected"}, &out, &errOut)
+	if err == nil {
+		t.Fatal("expected argument error")
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr should not duplicate returned error: %q", errOut.String())
+	}
+}
+
+func TestCLIRejectsConflictingEditFlags(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := Execute(context.Background(), []string{"edit", "1", "--due", "today", "--clear-due"}, &out, &errOut)
+	if err == nil || !strings.Contains(err.Error(), "flags in the group") {
+		t.Fatalf("error = %v", err)
+	}
+}

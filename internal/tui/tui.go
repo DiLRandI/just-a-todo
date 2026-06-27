@@ -58,6 +58,7 @@ type Model struct {
 	pick      int
 	editingID int64
 	confirmID int64
+	color     bool
 }
 
 const (
@@ -74,20 +75,21 @@ type suggestion struct {
 	label string
 }
 
-func Run(ctx context.Context, st *store.Store) error {
-	model := NewModel(ctx, st)
+func Run(ctx context.Context, st *store.Store, color bool) error {
+	model := NewModel(ctx, st, color)
 	program := tea.NewProgram(model)
 	_, err := program.Run()
 	return err
 }
 
-func NewModel(ctx context.Context, st *store.Store) Model {
+func NewModel(ctx context.Context, st *store.Store, color bool) Model {
 	model := Model{
 		ctx:    ctx,
 		store:  st,
 		view:   viewOpen,
 		width:  100,
 		height: 30,
+		color:  color,
 	}
 	model.refresh()
 	return model
@@ -130,6 +132,9 @@ func (m Model) View() tea.View {
 		content = m.confirmDeleteView()
 	default:
 		content = m.listView()
+	}
+	if !m.color {
+		content = stripANSI(content)
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true
@@ -300,19 +305,20 @@ func (m Model) updateConfirmDelete(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *Model) refresh() {
 	filter := store.ListFilter{Search: m.search}
 	now := time.Now()
+	var overdueRange *dateparse.Range
 	switch m.view {
 	case viewToday:
-		m.applyDateRange(&filter, "today", now)
+		overdueRange = m.applyDateRange(&filter, "today", now, true)
 	case viewTomorrow:
-		m.applyDateRange(&filter, "tomorrow", now)
+		overdueRange = m.applyDateRange(&filter, "tomorrow", now, true)
 	case viewThisWeek:
-		m.applyDateRange(&filter, "this week", now)
+		overdueRange = m.applyDateRange(&filter, "this week", now, true)
 	case viewNextWeek:
-		m.applyDateRange(&filter, "next week", now)
+		m.applyDateRange(&filter, "next week", now, false)
 	case viewThisMonth:
-		m.applyDateRange(&filter, "this month", now)
+		overdueRange = m.applyDateRange(&filter, "this month", now, true)
 	case viewNextMonth:
-		m.applyDateRange(&filter, "next month", now)
+		m.applyDateRange(&filter, "next month", now, false)
 	case viewNoDue:
 		filter.NoDueOnly = true
 	case viewDone:
@@ -330,18 +336,37 @@ func (m *Model) refresh() {
 		m.err = err
 		return
 	}
+	if overdueRange != nil {
+		items = itemsForRange(items, *overdueRange, now)
+	}
 	m.items = items
 	m.clampCursor()
 }
 
-func (m *Model) applyDateRange(filter *store.ListFilter, name string, now time.Time) {
+func (m *Model) applyDateRange(filter *store.ListFilter, name string, now time.Time, includeEarlier bool) *dateparse.Range {
 	r, err := dateparse.RangeFor(name, now)
 	if err != nil {
 		m.err = err
-		return
+		return nil
 	}
-	filter.DueStart = r.StartDate
+	if !includeEarlier {
+		filter.DueStart = r.StartDate
+	}
 	filter.DueEnd = r.EndDate
+	if includeEarlier {
+		return &r
+	}
+	return nil
+}
+
+func itemsForRange(items []todo.Todo, r dateparse.Range, now time.Time) []todo.Todo {
+	filtered := make([]todo.Todo, 0, len(items))
+	for _, item := range items {
+		if dateparse.IsOverdue(item.DueDate, item.DueTime, now) || dateparse.InRange(item.DueDate, r) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 func (m *Model) setView(view viewMode) {
@@ -591,7 +616,7 @@ func filteredSuggestions(suggestions []suggestion, input string) []suggestion {
 	}
 	for _, item := range suggestions {
 		if strings.ToLower(item.value) == input {
-			return suggestions
+			return []suggestion{item}
 		}
 	}
 	filtered := make([]suggestion, 0, len(suggestions))
@@ -703,8 +728,8 @@ func (m Model) saveForm() Model {
 
 func (m Model) listView() string {
 	var b strings.Builder
-	header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Render("todo")
-	fmt.Fprintf(&b, "%s  %s", header, lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Render(string(m.view)))
+	header := m.renderStyle(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")), "todo")
+	fmt.Fprintf(&b, "%s  %s", header, m.renderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("14")), string(m.view)))
 	if m.search != "" {
 		fmt.Fprintf(&b, "  search:%s", m.search)
 	}
@@ -713,9 +738,9 @@ func (m Model) listView() string {
 	b.WriteString("6 this month  7 next month  8 no due  9 done  0 archived\n\n")
 
 	if m.err != nil {
-		fmt.Fprintf(&b, "%s\n\n", lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.err.Error()))
+		fmt.Fprintf(&b, "%s\n\n", m.renderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("9")), m.err.Error()))
 	} else if m.message != "" {
-		fmt.Fprintf(&b, "%s\n\n", lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(m.message))
+		fmt.Fprintf(&b, "%s\n\n", m.renderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("10")), m.message))
 	}
 
 	if len(m.items) == 0 {
@@ -730,7 +755,7 @@ func (m Model) listView() string {
 				prefix = "> "
 				lineStyle = lineStyle.Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8"))
 			}
-			fmt.Fprintf(&b, "%s%s\n", prefix, lineStyle.Render(renderTodoLine(m.items[i], m.width-2)))
+			fmt.Fprintf(&b, "%s%s\n", prefix, m.renderStyle(lineStyle, renderTodoLine(m.items[i], m.width-2)))
 		}
 	}
 
@@ -745,15 +770,15 @@ func (m Model) formView() string {
 	if m.editingID != 0 {
 		title = fmt.Sprintf("Edit #%d", m.editingID)
 	}
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Render(title))
+	b.WriteString(m.renderStyle(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")), title))
 	b.WriteString("\n\n")
 	if m.err != nil {
-		fmt.Fprintf(&b, "%s\n\n", lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.err.Error()))
+		fmt.Fprintf(&b, "%s\n\n", m.renderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("9")), m.err.Error()))
 	}
 	for i, input := range m.inputs {
 		line := input.View()
 		if i == m.field {
-			line = lipgloss.NewStyle().Bold(true).Render(line)
+			line = m.renderStyle(lipgloss.NewStyle().Bold(true), line)
 		}
 		b.WriteString(line)
 		b.WriteString("\n")
@@ -763,7 +788,7 @@ func (m Model) formView() string {
 	}
 	notes := m.notes.View()
 	if m.field == formNotes {
-		notes = lipgloss.NewStyle().Bold(true).Render(notes)
+		notes = m.renderStyle(lipgloss.NewStyle().Bold(true), notes)
 	}
 	b.WriteString(notes)
 	if !strings.HasSuffix(notes, "\n") {
@@ -784,7 +809,7 @@ func (m Model) suggestionsView() string {
 	suggestions := m.suggestions()
 	if len(suggestions) == 0 {
 		if m.field == formDue || m.field == formRepeat {
-			return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("  no matching suggestions") + "\n"
+			return m.renderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("8")), "  no matching suggestions") + "\n"
 		}
 		return ""
 	}
@@ -802,17 +827,17 @@ func (m Model) suggestionsView() string {
 		if value == "" {
 			value = "(blank)"
 		}
-		fmt.Fprintf(&b, "%s%s\n", prefix, style.Render(fmt.Sprintf("%-16s %s", value, suggestions[i].label)))
+		fmt.Fprintf(&b, "%s%s\n", prefix, m.renderStyle(style, fmt.Sprintf("%-16s %s", value, suggestions[i].label)))
 	}
 	if len(suggestions) > limit {
-		fmt.Fprintf(&b, "  %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(fmt.Sprintf("+%d more, keep typing to filter", len(suggestions)-limit)))
+		fmt.Fprintf(&b, "  %s\n", m.renderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("8")), fmt.Sprintf("+%d more, keep typing to filter", len(suggestions)-limit)))
 	}
 	return b.String()
 }
 
 func (m Model) searchView() string {
 	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Render("Search"))
+	b.WriteString(m.renderStyle(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")), "Search"))
 	b.WriteString("\n\n")
 	b.WriteString(m.inputs[0].View())
 	b.WriteString("\n\nenter apply  esc cancel\n")
@@ -829,15 +854,78 @@ func renderTodoLine(item todo.Todo, width int) string {
 		status = "done"
 	}
 	if item.IsArchived() {
-		status = "archived"
+		status += "+arc"
 	}
 	tags := ""
 	if len(item.Tags) > 0 {
 		tags = " [" + strings.Join(item.Tags, ", ") + "]"
 	}
 	line := fmt.Sprintf("#%-4d %-8s %-8s %-16s %s%s", item.ID, item.Priority, status, item.DueLabel(), item.Title, tags)
-	if width > 0 && len(line) > width {
-		return line[:max(0, width-3)] + "..."
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(line) > width {
+		if width <= 3 {
+			return strings.Repeat(".", width)
+		}
+		var truncated strings.Builder
+		for _, r := range line {
+			candidate := truncated.String() + string(r)
+			if lipgloss.Width(candidate) > width-3 {
+				break
+			}
+			truncated.WriteRune(r)
+		}
+		return truncated.String() + "..."
 	}
 	return line
+}
+
+func (m Model) renderStyle(style lipgloss.Style, value string) string {
+	if !m.color {
+		return value
+	}
+	return style.Render(value)
+}
+
+func stripANSI(value string) string {
+	var result strings.Builder
+	for i := 0; i < len(value); {
+		if value[i] != '\x1b' {
+			result.WriteByte(value[i])
+			i++
+			continue
+		}
+		i++
+		if i >= len(value) {
+			break
+		}
+		switch value[i] {
+		case '[':
+			i++
+			for i < len(value) {
+				final := value[i] >= 0x40 && value[i] <= 0x7e
+				i++
+				if final {
+					break
+				}
+			}
+		case ']':
+			i++
+			for i < len(value) {
+				if value[i] == '\a' {
+					i++
+					break
+				}
+				if value[i] == '\x1b' && i+1 < len(value) && value[i+1] == '\\' {
+					i += 2
+					break
+				}
+				i++
+			}
+		default:
+			i++
+		}
+	}
+	return result.String()
 }
