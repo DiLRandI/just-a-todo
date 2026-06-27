@@ -24,9 +24,10 @@ type options struct {
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	opts := &options{}
 	root := &cobra.Command{
-		Use:          "todo",
-		Short:        "A terminal todo app",
-		SilenceUsage: true,
+		Use:           "todo",
+		Short:         "A terminal todo app",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTUI(ctx, opts)
 		},
@@ -61,6 +62,7 @@ func newTUICommand(ctx context.Context, opts *options) *cobra.Command {
 		Use:          "tui",
 		Short:        "Open the interactive TUI",
 		SilenceUsage: true,
+		Args:         cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTUI(ctx, opts)
 		},
@@ -126,6 +128,7 @@ func newListCommand(ctx context.Context, opts *options, stdout io.Writer) *cobra
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List todos",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			priority, err := normalizeOptionalPriority(priorityInput)
 			if err != nil {
@@ -168,6 +171,7 @@ func newListCommand(ctx context.Context, opts *options, stdout io.Writer) *cobra
 	cmd.Flags().BoolVar(&done, "done", false, "show completed todos")
 	cmd.Flags().BoolVar(&archived, "archived", false, "show archived todos")
 	cmd.Flags().BoolVar(&all, "all", false, "show open and completed todos")
+	cmd.MarkFlagsMutuallyExclusive("done", "all")
 	return cmd
 }
 
@@ -175,6 +179,7 @@ func newDateCommand(ctx context.Context, opts *options, stdout io.Writer, name s
 	return &cobra.Command{
 		Use:   name,
 		Short: fmt.Sprintf("Print %s todos and exit", name),
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			now := time.Now()
 			r, err := dateparse.RangeFor(name, now)
@@ -328,6 +333,8 @@ func newEditCommand(ctx context.Context, opts *options, stdout io.Writer) *cobra
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "replace tags")
 	cmd.Flags().BoolVar(&clearDue, "clear-due", false, "clear due date and time")
 	cmd.Flags().BoolVar(&clearTags, "clear-tags", false, "clear tags")
+	cmd.MarkFlagsMutuallyExclusive("due", "clear-due")
+	cmd.MarkFlagsMutuallyExclusive("tag", "clear-tags")
 	return cmd
 }
 
@@ -403,7 +410,7 @@ func runTUI(ctx context.Context, opts *options) error {
 		return err
 	}
 	defer st.Close()
-	return tui.Run(ctx, st)
+	return tui.Run(ctx, st, opts.colorEnabled())
 }
 
 func openStore(ctx context.Context, opts *options) (*store.Store, error) {
@@ -435,6 +442,9 @@ func normalizeOptionalPriority(input string) (todo.Priority, error) {
 func friendlyStoreErr(err error) error {
 	if errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("todo not found")
+	}
+	if errors.Is(err, store.ErrRecurringSuccessorExists) {
+		return fmt.Errorf("cannot reopen recurring todo: its next occurrence already exists")
 	}
 	return err
 }

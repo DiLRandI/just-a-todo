@@ -1,7 +1,7 @@
 BINARY := todo
 MAIN := ./cmd/todo
 
-.PHONY: build install test fmt tidy run today clean
+.PHONY: build install test vet check fmt tidy run today clean
 
 build:
 	go build -o bin/$(BINARY) $(MAIN)
@@ -11,6 +11,14 @@ install:
 
 test:
 	go test ./...
+
+vet:
+	go vet ./...
+
+check:
+	test -z "$$(gofmt -l cmd internal)"
+	go test ./...
+	go vet ./...
 
 fmt:
 	gofmt -w cmd internal

@@ -111,9 +111,16 @@ func IsOverdue(dueDate, dueTime string, now time.Time) bool {
 }
 
 func NextFutureDueDate(dueDate, dueTime, rule string, now time.Time) (string, error) {
+	return NextFutureDueDateAnchored(dueDate, dueTime, rule, 0, now)
+}
+
+func NextFutureDueDateAnchored(dueDate, dueTime, rule string, anchorDay int, now time.Time) (string, error) {
 	base, err := time.ParseInLocation(time.DateOnly, dueDate, now.Location())
 	if err != nil {
 		return "", fmt.Errorf("invalid due date %q: %w", dueDate, err)
+	}
+	if anchorDay <= 0 {
+		anchorDay = base.Day()
 	}
 
 	rule = strings.ToLower(strings.TrimSpace(rule))
@@ -122,7 +129,7 @@ func NextFutureDueDate(dueDate, dueTime, rule string, now time.Time) (string, er
 	}
 
 	for i := 1; i <= 3660; i++ {
-		next, err := addInterval(base, rule, i)
+		next, err := addInterval(base, rule, anchorDay, i)
 		if err != nil {
 			return "", err
 		}
@@ -158,7 +165,7 @@ func parseTimeToken(token string) (string, error) {
 	return parsed.Format("15:04"), nil
 }
 
-func addInterval(base time.Time, rule string, n int) (time.Time, error) {
+func addInterval(base time.Time, rule string, anchorDay, n int) (time.Time, error) {
 	switch rule {
 	case "daily":
 		return base.AddDate(0, 0, n), nil
@@ -166,7 +173,7 @@ func addInterval(base time.Time, rule string, n int) (time.Time, error) {
 		return base.AddDate(0, 0, n*7), nil
 	case "monthly":
 		year, month := addMonths(base.Year(), base.Month(), n)
-		day := min(base.Day(), lastDayOfMonth(year, month))
+		day := min(anchorDay, lastDayOfMonth(year, month))
 		return time.Date(year, month, day, 0, 0, 0, 0, base.Location()), nil
 	default:
 		return time.Time{}, fmt.Errorf("invalid repeat rule %q", rule)

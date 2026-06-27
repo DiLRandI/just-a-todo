@@ -100,3 +100,14 @@ func TestNextFutureDueDate(t *testing.T) {
 		t.Fatalf("monthly clamp = %s", next)
 	}
 }
+
+func TestNextFutureDueDatePreservesMonthlyAnchor(t *testing.T) {
+	now := time.Date(2026, 2, 28, 12, 0, 0, 0, time.Local)
+	next, err := NextFutureDueDateAnchored("2026-02-28", "", "monthly", 31, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != "2026-03-31" {
+		t.Fatalf("next = %s, want 2026-03-31", next)
+	}
+}
