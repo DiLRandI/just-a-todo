@@ -24,6 +24,13 @@ Or to use a custom install path:
 PREFIX=~/.local/bin ./install.sh
 ```
 
+Check app version:
+
+```sh
+todo --version
+todo -v
+```
+
 From a local checkout:
 
 ```sh

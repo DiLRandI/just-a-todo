@@ -52,6 +52,24 @@ func TestCLIRemoveRequiresForce(t *testing.T) {
 	}
 }
 
+func TestCLIVersionFlag(t *testing.T) {
+	originalVersion := version
+	SetVersion("v0.3.1")
+	t.Cleanup(func() {
+		SetVersion(originalVersion)
+	})
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := Execute(context.Background(), []string{"--version"}, &out, &errOut)
+	if err != nil {
+		t.Fatalf("version failed: %v stderr=%s", err, errOut.String())
+	}
+	if strings.TrimSpace(out.String()) != "todo v0.3.1" {
+		t.Fatalf("version output = %q", out.String())
+	}
+}
+
 func TestCLILeavesErrorRenderingToCaller(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer

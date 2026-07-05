@@ -6,6 +6,9 @@ builds:
   - id: todo
     main: ./cmd/todo
     binary: todo
+    ldflags:
+      - -s -w
+      - -X github.com/DiLRandI/just-a-todo/internal/cli.version={{.Version}}
     env:
       - CGO_ENABLED=0
     goos:
