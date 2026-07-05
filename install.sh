@@ -9,6 +9,11 @@ API_URL="https://api.github.com/repos/${OWNER}/${REPO}"
 
 VERSION="${VERSION:-latest}"
 INSTALL_DIR="${PREFIX:-${TODO_INSTALL_DIR:-}}"
+UPDATE_MODE=0
+HAS_EXPLICIT_INSTALL_DIR=0
+if [ -n "$INSTALL_DIR" ]; then
+  HAS_EXPLICIT_INSTALL_DIR=1
+fi
 
 usage() {
   cat <<'EOF_USAGE'
@@ -25,6 +30,7 @@ Install a specific version:
 Options:
   --prefix PATH       Install directory (overrides PREFIX/TODO_INSTALL_DIR)
   --install-dir PATH  Same as --prefix
+  --update            Install only if version differs from current installation
   --help              Show this help
 
 Environment:
@@ -47,6 +53,10 @@ normalize_lower() {
   tr '[:upper:]' '[:lower:]'
 }
 
+get_binary_version() {
+  "$1" --version 2>/dev/null | awk '{print $NF}'
+}
+
 require_cmd curl
 
 while [ "$#" -gt 0 ]; do
@@ -56,11 +66,16 @@ while [ "$#" -gt 0 ]; do
         error "$1 requires a directory value"
       fi
       INSTALL_DIR="$2"
+      HAS_EXPLICIT_INSTALL_DIR=1
       shift 2
       ;;
     --help|-h)
       usage
       exit 0
+      ;;
+    --update)
+      UPDATE_MODE=1
+      shift
       ;;
     --*)
       error "unknown option: $1"
@@ -113,6 +128,29 @@ if [ "$os" = "windows" ]; then
 else
   ext="tar.gz"
   bin_ext=""
+fi
+
+if [ "$UPDATE_MODE" -eq 1 ]; then
+  if [ -z "$INSTALL_DIR" ]; then
+    if [ -w /usr/local/bin ]; then
+      INSTALL_DIR="/usr/local/bin"
+    else
+      INSTALL_DIR="$HOME/.local/bin"
+    fi
+  fi
+
+  existing_binary="${INSTALL_DIR}/${BINARY}${bin_ext}"
+  if [ "$HAS_EXPLICIT_INSTALL_DIR" -eq 0 ] && [ ! -x "$existing_binary" ] && command -v "$BINARY" >/dev/null 2>&1; then
+    existing_binary="$(command -v "$BINARY" | awk '{print $NF}')"
+  fi
+
+  if [ -x "$existing_binary" ]; then
+    current_version="$(get_binary_version "$existing_binary")"
+    if [ -n "$current_version" ] && [ "${current_version#v}" = "${tag_without_v}" ]; then
+      echo "${BINARY}${bin_ext} is already at ${tag_name} at ${existing_binary}"
+      exit 0
+    fi
+  fi
 fi
 
 if [ "$arch" = "amd64" ]; then
