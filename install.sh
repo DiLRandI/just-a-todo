@@ -87,6 +87,7 @@ fi
 release_json="$(curl -fsSL "$release_url")"
 tag_name="$(printf '%s' "$release_json" | tr '\n' ' ' | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 [ -n "$tag_name" ] || error "could not determine release tag from GitHub API"
+tag_without_v="${tag_name#v}"
 
 asset_urls="$(printf '%s' "$release_json" | tr '\n' ' ' | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/"browser_download_url"[[:space:]]*:[[:space:]]*"([^"]*)"/\\1/')"
 [ -n "$asset_urls" ] || error "no assets found for ${tag_name}"
@@ -114,29 +115,43 @@ else
   bin_ext=""
 fi
 
-target_pattern="${BINARY}_${tag_name}_${os}_${arch}.${ext}"
+if [ "$arch" = "amd64" ]; then
+  arch_candidates="amd64 x86_64"
+else
+  arch_candidates="$arch"
+fi
+
 archive_url=""
 archive_file_name=""
 
 while IFS= read -r url; do
-  normalized="$(printf '%s' "$url" | normalize_lower)"
-  if printf '%s\n' "$normalized" | grep -q "$target_pattern"; then
-    archive_url="$url"
-    archive_file_name="$(printf '%s' "$url" | awk -F/ '{print $NF}')"
-    break
-  fi
+  for tag in "$tag_name" "$tag_without_v"; do
+    for arch_candidate in $arch_candidates; do
+      candidate_pattern="${BINARY}_${tag}_${os}_${arch_candidate}.${ext}"
+      normalized="$(printf '%s' "$url" | normalize_lower)"
+      if printf '%s\n' "$normalized" | grep -q "$candidate_pattern"; then
+        archive_url="$url"
+        archive_file_name="$(printf '%s' "$url" | awk -F/ '{print $NF}')"
+        break 3
+      fi
+    done
+  done
 done <<EOF_ASSETS
 $(printf '%s\n' "$asset_urls")
 EOF_ASSETS
 
 if [ -z "$archive_url" ]; then
   while IFS= read -r url; do
-    normalized="$(printf '%s' "$url" | normalize_lower)"
-    if printf '%s\n' "$normalized" | grep -q "${BINARY}.*${tag_name}.*${os}.*${arch}.*${ext}"; then
-      archive_url="$url"
-      archive_file_name="$(printf '%s' "$url" | awk -F/ '{print $NF}')"
-      break
-    fi
+    for tag in "$tag_name" "$tag_without_v"; do
+      for arch_candidate in $arch_candidates; do
+        normalized="$(printf '%s' "$url" | normalize_lower)"
+        if printf '%s\n' "$normalized" | grep -iq "${BINARY}.*${tag}.*${os}.*${arch_candidate}.*${ext}"; then
+          archive_url="$url"
+          archive_file_name="$(printf '%s' "$url" | awk -F/ '{print $NF}')"
+          break 3
+        fi
+      done
+    done
   done <<EOF_ASSETS
 $(printf '%s\n' "$asset_urls")
 EOF_ASSETS
