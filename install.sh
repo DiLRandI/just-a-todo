@@ -129,7 +129,7 @@ while IFS= read -r url; do
     for arch_candidate in $arch_candidates; do
       candidate_pattern="${BINARY}_${tag}_${os}_${arch_candidate}.${ext}"
       normalized="$(printf '%s' "$url" | normalize_lower)"
-      if printf '%s\n' "$normalized" | grep -q "$candidate_pattern"; then
+      if printf '%s\n' "$normalized" | grep -Fq "$candidate_pattern"; then
         archive_url="$url"
         archive_file_name="$(printf '%s' "$url" | awk -F/ '{print $NF}')"
         break 3
@@ -142,23 +142,59 @@ EOF_ASSETS
 
 if [ -z "$archive_url" ]; then
   while IFS= read -r url; do
-    for tag in "$tag_name" "$tag_without_v"; do
-      for arch_candidate in $arch_candidates; do
-        normalized="$(printf '%s' "$url" | normalize_lower)"
-        if printf '%s\n' "$normalized" | grep -iq "${BINARY}.*${tag}.*${os}.*${arch_candidate}.*${ext}"; then
-          archive_url="$url"
-          archive_file_name="$(printf '%s' "$url" | awk -F/ '{print $NF}')"
-          break 3
-        fi
+    normalized="$(printf '%s' "$url" | normalize_lower)"
+    if printf '%s\n' "$normalized" | grep -Fq ".${ext}" && printf '%s\n' "$normalized" | grep -Fq "_${os}_"; then
+      for tag in "$tag_name" "$tag_without_v"; do
+        for arch_candidate in $arch_candidates; do
+          if printf '%s\n' "$normalized" | grep -Fq "${tag}" && printf '%s\n' "$normalized" | grep -Fq "${arch_candidate}"; then
+            archive_url="$url"
+            archive_file_name="$(printf '%s' "$url" | awk -F/ '{print $NF}')"
+            break 3
+          fi
+        done
       done
-    done
+    fi
   done <<EOF_ASSETS
 $(printf '%s\n' "$asset_urls")
 EOF_ASSETS
 fi
 
 if [ -z "$archive_url" ]; then
-  error "could not find matching asset for ${os}/${arch} in release ${tag_name}"
+  if [ -z "$INSTALL_DIR" ]; then
+    if [ -w /usr/local/bin ]; then
+      INSTALL_DIR="/usr/local/bin"
+    else
+      INSTALL_DIR="$HOME/.local/bin"
+    fi
+  fi
+  mkdir -p "$INSTALL_DIR"
+
+  if command -v go >/dev/null 2>&1; then
+    echo "warning: could not find matching release asset for ${os}/${arch} in ${tag_name}" >&2
+    echo "warning: falling back to source install (go install)" >&2
+
+    if GOBIN="$INSTALL_DIR" go install "${OWNER}/${REPO}/cmd/todo@${tag_name}" >/dev/null 2>&1; then
+      install_path="${INSTALL_DIR}/${BINARY}${bin_ext}"
+    elif GOBIN="$INSTALL_DIR" go install "${OWNER}/${REPO}/cmd/todo@${tag_without_v}" >/dev/null 2>&1; then
+      install_path="${INSTALL_DIR}/${BINARY}${bin_ext}"
+    else
+      echo "could not install from source for ${tag_name}" >&2
+    fi
+
+    if [ -x "${INSTALL_DIR}/${BINARY}${bin_ext}" ]; then
+      echo "installed ${BINARY}${bin_ext} to ${INSTALL_DIR}/${BINARY}${bin_ext}"
+      echo "version: ${tag_name}"
+      echo
+      echo "to ensure PATH, run:"
+      echo "  export PATH=\"${INSTALL_DIR}:\\$PATH\""
+      exit 0
+    fi
+  fi
+
+  echo "error: could not find matching asset for ${os}/${arch} in release ${tag_name}" >&2
+  echo "available assets:" >&2
+  printf '%s\n' "$asset_urls" | awk -F/ '{print "  -", $NF}' >&2
+  exit 1
 fi
 
 if [ -z "$INSTALL_DIR" ]; then
