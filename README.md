@@ -6,10 +6,22 @@ Building from source requires Go 1.26.3 or newer.
 
 ## Install
 
-From GitHub:
+Recommended install:
 
 ```sh
-go install github.com/DiLRandI/just-a-todo/cmd/todo@latest
+curl -fsSL https://raw.githubusercontent.com/DiLRandI/just-a-todo/main/install.sh | sh
+```
+
+Install a specific version:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DiLRandI/just-a-todo/main/install.sh | sh -s -- v0.3.0
+```
+
+Or to use a custom install path:
+
+```sh
+PREFIX=~/.local/bin ./install.sh
 ```
 
 From a local checkout:
