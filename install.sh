@@ -89,7 +89,7 @@ tag_name="$(printf '%s' "$release_json" | tr '\n' ' ' | sed -n 's/.*"tag_name"[[
 [ -n "$tag_name" ] || error "could not determine release tag from GitHub API"
 tag_without_v="${tag_name#v}"
 
-asset_urls="$(printf '%s' "$release_json" | tr '\n' ' ' | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/"browser_download_url"[[:space:]]*:[[:space:]]*"([^"]*)"/\\1/')"
+asset_urls="$(printf '%s' "$release_json" | tr '\n' ' ' | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
 [ -n "$asset_urls" ] || error "no assets found for ${tag_name}"
 
 checksum_url="$(printf '%s\n' "$asset_urls" | grep -i 'checksums.txt$' | head -n1 || true)"
