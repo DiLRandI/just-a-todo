@@ -16,9 +16,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var version = "dev"
+
 type options struct {
 	dbPath  string
 	noColor bool
+}
+
+func SetVersion(v string) {
+	version = v
 }
 
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -26,6 +32,7 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	root := &cobra.Command{
 		Use:           "todo",
 		Short:         "A terminal todo app",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -35,6 +42,8 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
+	root.SetVersionTemplate("{{.Name}} {{.Version}}\n")
+	root.InitDefaultVersionFlag()
 	root.PersistentFlags().StringVar(&opts.dbPath, "db", "", "path to the SQLite database")
 	root.PersistentFlags().BoolVar(&opts.noColor, "no-color", false, "disable ANSI color output")
 

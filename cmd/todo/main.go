@@ -10,7 +10,10 @@ import (
 	"github.com/DiLRandI/just-a-todo/internal/cli"
 )
 
+var version = "dev"
+
 func main() {
+	cli.SetVersion(version)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := cli.Execute(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
