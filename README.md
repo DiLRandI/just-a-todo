@@ -18,6 +18,12 @@ Install a specific version:
 curl -fsSL https://raw.githubusercontent.com/DiLRandI/just-a-todo/main/install.sh | sh -s -- v0.3.0
 ```
 
+Install only if the target version is not already present:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DiLRandI/just-a-todo/main/install.sh | sh -s -- --update
+```
+
 Or to use a custom install path:
 
 ```sh
